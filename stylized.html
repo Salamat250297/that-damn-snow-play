@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Дом бабушки — Stylized 3D</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#1b2a4a;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+canvas{display:block;touch-action:none}
+.ui{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top) + 10px);display:flex;justify-content:center;gap:8px;pointer-events:none}
+.ui h1{margin:0;font-size:15px;font-weight:900;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.5);padding:7px 14px;border-radius:12px;background:rgba(20,30,60,.35)}
+.bar{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 14px);display:flex;justify-content:center;gap:8px}
+.bar button{font:inherit;font-weight:800;font-size:14px;border:0;border-radius:14px;padding:10px 14px;color:#2b1d1a;background:#fff4dc;box-shadow:0 4px 0 #c99a5a;cursor:pointer}
+.bar button.on{background:#ffd36b}
+.hint{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 62px);text-align:center;font-size:12px;font-weight:700;color:rgba(255,255,255,.8);text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<div class="ui"><h1>Дом бабушки · Stylized 3D</h1></div>
+<div class="hint">Крутите сцену пальцем · колесо / щипок — приблизить</div>
+<div class="bar"><button data-t="eve" class="on">🌆 Вечер</button><button data-t="day">☀️ День</button><button data-t="night">🌙 Ночь</button></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+// ---------- основа ----------
+const R = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+R.setPixelRatio(Math.min(2, devicePixelRatio)); R.setSize(innerWidth, innerHeight);
+R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
+R.toneMapping = THREE.ACESFilmicToneMapping; R.toneMappingExposure = 1.05;
+document.body.appendChild(R.domElement);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 400);
+cam.position.set(13, 7.5, 17);
+const ctl = new OrbitControls(cam, R.domElement); ctl.target.set(0, 2.6, 0); ctl.enableDamping = true; ctl.minDistance = 9; ctl.maxDistance = 40; ctl.maxPolarAngle = 1.45; ctl.autoRotate = true; ctl.autoRotateSpeed = 0.35;
+ctl.addEventListener('start', () => ctl.autoRotate = false);
+const rnd = (() => { let a = 7; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; })();
+
+// мультяшное освещение: 4 ступени света, мягкие цветные тени
+const grad = (() => { const d = new Uint8Array([70, 130, 200, 255]); const t = new THREE.DataTexture(d, 4, 1, THREE.RedFormat); t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t; })();
+const toon = (c, o = {}) => new THREE.MeshToonMaterial(Object.assign({ color: c, gradientMap: grad }, o));
+// контур: «вывернутая оболочка» — тот же меш, раздутый по нормалям, тёмной обратной стороной
+const lineMat = new THREE.ShaderMaterial({
+  uniforms: { w: { value: 0.035 }, col: { value: new THREE.Color(0x2a1a14) } }, side: THREE.BackSide,
+  vertexShader: 'uniform float w; void main(){ vec3 p = position + normal * w; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
+  fragmentShader: 'uniform vec3 col; void main(){ gl_FragColor = vec4(col, 1.0); }',
+});
+const lineMatThin = lineMat.clone(); lineMatThin.uniforms.w.value = 0.02;
+function mesh(geo, mat, x = 0, y = 0, z = 0, parent = scene, o = {}) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = o.shadow !== false; m.receiveShadow = true; parent.add(m);
+  if (o.line !== false) { const l = new THREE.Mesh(geo, o.thin ? lineMatThin : lineMat); l.castShadow = false; m.add(l); }
+  return m;
+}
+const rbox = (w, h, d, r = 0.08, s = 3) => new RoundedBoxGeometry(w, h, d, s, Math.min(r, w / 2.01, h / 2.01, d / 2.01));
+
+// ---------- палитра ----------
+const C = {
+  log: 0xc8844f, logB: 0xb3713f, logEnd: 0xe8b47c, ring: 0x9a5a32,
+  roof: 0x8a3b2d, snow: 0xf7fbff, ice: 0xbfe6ff,
+  trim: 0xf6f1e4, blue: 0x3d7fd6, glass: 0xffc56b, curtain: 0xd2483f,
+  stone: 0x9aa3b3, brick: 0xb8573f, pine: 0x2f7a57, pineD: 0x245e45, birch: 0xf2efe8, red: 0xe0473c, gold: 0xffcf5a,
+};
+
+// ---------- земля и сугробы ----------
+{
+  const g = new THREE.CircleGeometry(60, 160, 0, Math.PI * 2); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), r = Math.hypot(x, z); let h = Math.sin(x * 0.35) * Math.cos(z * 0.3) * 0.25 + Math.sin(x * 0.11 + z * 0.13) * 0.4; if (r < 7) h *= r / 7; h += Math.max(0, r - 30) * 0.12; p.setY(i, h); }
+  g.computeVertexNormals();
+  mesh(g, toon(C.snow), 0, 0, 0, scene, { line: false, shadow: false });
+}
+
+// ---------- изба ----------
+const house = new THREE.Group(); scene.add(house);
+const HW = 7.2, HD = 5.6, LOGR = 0.24, ROWS = 10, H0 = 0.55; // ширина, глубина, радиус бревна, рядов, высота цоколя
+// цоколь из камней
+for (let i = 0; i < 26; i++) {
+  const t = i / 26, per = 2 * (HW + HD), d = t * per; let x, z;
+  if (d < HW) { x = -HW / 2 + d; z = HD / 2; } else if (d < HW + HD) { x = HW / 2; z = HD / 2 - (d - HW); } else if (d < 2 * HW + HD) { x = HW / 2 - (d - HW - HD); z = -HD / 2; } else { x = -HW / 2; z = -HD / 2 + (d - 2 * HW - HD); }
+  const s = 0.55 + rnd() * 0.3; mesh(rbox(s * 1.3, 0.55, s, 0.18), toon(rnd() < 0.5 ? C.stone : 0x8a93a3), x, 0.26, z, house, { thin: true });
+}
+// брёвна: чуть кривые, разных оттенков, с торцами-кругляшами на углах (как у настоящего сруба)
+const logGeo = (len) => { const g = new THREE.CapsuleGeometry(LOGR, len, 6, 12); g.rotateZ(Math.PI / 2); return g; };
+const endMat = toon(C.logEnd), ringMat = toon(C.ring);
+function logRow(y, along, len, off, gaps, k) {
+  // gaps: [[from,to],...] — вырезы под окна/дверь вдоль бревна (координата вдоль стены)
+  const segs = []; let a = -len / 2;
+  for (const [g0, g1] of gaps || []) { if (g0 > a) segs.push([a, g0]); a = g1; }
+  if (a < len / 2) segs.push([a, len / 2]);
+  const mat = toon(k % 2 ? C.log : C.logB);
+  for (const [s0, s1] of segs) {
+    const L = s1 - s0; if (L < 0.2) continue;
+    const m = mesh(logGeo(Math.max(0.01, L - LOGR * 2 + 0.3)), mat, 0, y, 0, house, { thin: true });
+    const c = (s0 + s1) / 2;
+    if (along === 'x') { m.position.x = c; m.position.z = off; } else { m.rotation.y = Math.PI / 2; m.position.z = c; m.position.x = off; }
+    m.rotation.z = (rnd() - 0.5) * 0.012; m.position.y += (rnd() - 0.5) * 0.02;
+  }
+}
+const win = (cx, w = 1.25) => [cx - w / 2, cx + w / 2];
+const FRONT_GAPS = { win1: win(-2.2), door: [0.15, 1.65], win2: win(2.75) };
+for (let k = 0; k < ROWS; k++) {
+  const y = H0 + LOGR + k * LOGR * 1.85, inWin = y > 1.55 && y < 3.05, inDoor = y < 3.25;
+  const front = []; if (inWin) { front.push(FRONT_GAPS.win1); front.push(FRONT_GAPS.win2); } if (inDoor) front.push(FRONT_GAPS.door);
+  front.sort((a, b) => a[0] - b[0]);
+  const side = inWin ? [win(0, 1.15)] : [];
+  // брёвна по X — с выпуском на углах; по Z — со сдвигом по высоте (в «замок»)
+  const yy = y + (k % 2 ? LOGR * 0.92 : 0);
+  logRow(yy, 'x', HW + 0.9, HD / 2, front, k);
+  logRow(yy, 'x', HW + 0.9, -HD / 2, inWin ? [win(-1.6), win(1.6)] : [], k + 1);
+  logRow(y + (k % 2 ? 0 : LOGR * 0.92), 'z', HD + 0.9, HW / 2, side, k + 1);
+  logRow(y + (k % 2 ? 0 : LOGR * 0.92), 'z', HD + 0.9, -HW / 2, side, k);
+}
+// торцы брёвен на углах
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) for (let k = 0; k < ROWS; k++) {
+  const y = H0 + LOGR + k * LOGR * 1.85;
+  for (const [ax, yy] of [['x', y + (k % 2 ? LOGR * 0.92 : 0)], ['z', y + (k % 2 ? 0 : LOGR * 0.92)]]) {
+    const g = new THREE.CircleGeometry(LOGR * 0.95, 18);
+    const m = new THREE.Mesh(g, endMat); const r2 = new THREE.Mesh(new THREE.RingGeometry(LOGR * 0.4, LOGR * 0.5, 18), ringMat);
+    if (ax === 'x') { m.position.set(sx * (HW / 2 + 0.45 + 0.001), yy, sz * HD / 2); m.rotation.y = sx * Math.PI / 2; }
+    else { m.position.set(sx * HW / 2, yy, sz * (HD / 2 + 0.45 + 0.001)); m.rotation.y = sz > 0 ? 0 : Math.PI; }
+    r2.position.z = 0.002; m.add(r2); house.add(m);
+  }
+}
+const WALL_TOP = H0 + LOGR + ROWS * LOGR * 1.85;
+// тёплая комната внутри — видна в окнах и в открытой двери
+{ const room = new THREE.Mesh(new THREE.BoxGeometry(HW - 0.5, WALL_TOP - H0, HD - 0.5), new THREE.MeshBasicMaterial({ color: 0x8a4a26, side: THREE.BackSide })); room.position.y = (WALL_TOP + H0) / 2; house.add(room); }
+// окна: резные наличники, ставни, тёплое стекло со шторками (стекло светится — его ловит «свечение»)
+const glassMat = new THREE.MeshStandardMaterial({ color: 0x2a1405, emissive: C.glass, emissiveIntensity: 1.6 });
+const trimMat = toon(C.trim), blueMat = toon(C.blue), curtainMat = toon(C.curtain);
+function windowAt(x, z, ry) {
+  const g = new THREE.Group(); g.position.set(x, 2.3, z); g.rotation.y = ry; house.add(g);
+  mesh(new THREE.PlaneGeometry(1.05, 1.2), glassMat, 0, 0, -0.02, g, { line: false, shadow: false });
+  for (const s of [-1, 1]) { const c = mesh(rbox(0.28, 1.15, 0.06, 0.03), curtainMat, s * 0.38, 0, 0.0, g, { thin: true }); c.rotation.z = s * 0.06; }
+  mesh(rbox(0.08, 1.25, 0.1, 0.03), trimMat, 0, 0, 0.04, g, { thin: true }); mesh(rbox(1.1, 0.08, 0.1, 0.03), trimMat, 0, 0.12, 0.04, g, { thin: true });
+  // наличник: рамка, «кокошник» сверху с резными зубцами, полочка снизу
+  for (const s of [-1, 1]) mesh(rbox(0.16, 1.6, 0.16, 0.05), trimMat, s * 0.66, 0, 0.1, g);
+  mesh(rbox(1.6, 0.16, 0.18, 0.05), trimMat, 0, -0.75, 0.12, g);
+  const kok = new THREE.Shape(); kok.moveTo(-0.85, 0); kok.lineTo(0.85, 0); kok.quadraticCurveTo(0.6, 0.62, 0, 0.72); kok.quadraticCurveTo(-0.6, 0.62, -0.85, 0);
+  const kg = new THREE.ExtrudeGeometry(kok, { depth: 0.12, bevelEnabled: true, bevelSize: 0.03, bevelThickness: 0.03, bevelSegments: 2, curveSegments: 16 }); kg.translate(0, 0, 0.04);
+  mesh(kg, trimMat, 0, 0.72, 0.02, g);
+  for (let i = -2; i <= 2; i++) mesh(new THREE.SphereGeometry(0.06, 10, 8), blueMat, i * 0.27, 0.86 - Math.abs(i) * 0.05, 0.2, g, { thin: true });
+  // ставни
+  for (const s of [-1, 1]) { const sh = mesh(rbox(0.5, 1.3, 0.07, 0.04), blueMat, s * 1.0, 0, 0.08, g); sh.rotation.y = s * 0.25; mesh(rbox(0.36, 0.06, 0.04, 0.02), trimMat, 0, 0.3, 0.05, sh, { thin: true }); mesh(rbox(0.36, 0.06, 0.04, 0.02), trimMat, 0, -0.3, 0.05, sh, { thin: true }); }
+  // снег на полочке
+  mesh(rbox(1.5, 0.12, 0.26, 0.06), toon(C.snow), 0, -0.64, 0.14, g, { thin: true });
+}
+windowAt(-2.2, HD / 2 + 0.05, 0); windowAt(2.75, HD / 2 + 0.05, 0);
+windowAt(HW / 2 + 0.05, 0, Math.PI / 2); windowAt(-HW / 2 - 0.05, 0, -Math.PI / 2);
+windowAt(-1.6, -HD / 2 - 0.05, Math.PI); windowAt(1.6, -HD / 2 - 0.05, Math.PI);
+// дверь — приоткрыта, внутри тёплый свет
+{
+  const g = new THREE.Group(); g.position.set(0.9, H0, HD / 2 + 0.05); house.add(g);
+  const doorGlow = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 2.6), new THREE.MeshStandardMaterial({ color: 0x2a1405, emissive: 0xffb760, emissiveIntensity: 1.1 })); doorGlow.position.set(0, 1.3, -0.05); g.add(doorGlow);
+  const leaf = new THREE.Group(); leaf.position.set(-0.7, 0, 0); leaf.rotation.y = -0.55; g.add(leaf);
+  for (let i = 0; i < 4; i++) mesh(rbox(0.34, 2.55, 0.12, 0.04), toon(i % 2 ? 0x8a4a26 : 0x9c5630), 0.18 + i * 0.35, 1.28, 0, leaf, { thin: true });
+  mesh(new THREE.SphereGeometry(0.07, 10, 8), toon(C.gold), 1.25, 1.25, 0.1, leaf, { thin: true });
+  for (const s of [-1, 1]) mesh(rbox(0.2, 2.8, 0.2, 0.06), trimMat, s * 0.82, 1.4, 0.06, g);
+  mesh(rbox(1.9, 0.22, 0.24, 0.06), trimMat, 0, 2.82, 0.06, g);
+  // крыльцо со ступенями и навесом на столбиках
+  for (let s = 0; s < 3; s++) mesh(rbox(2.2 - s * 0.1, 0.18, 0.5, 0.05), toon(0x9c6a43), 0, -0.05 - s * 0.16, 0.35 + s * 0.42, g, { thin: true });
+  for (const s of [-1, 1]) mesh(new THREE.CylinderGeometry(0.09, 0.1, 3.1, 10), toon(C.logB), s * 1.05, 1.45, 1.1, g);
+  const canopy = mesh(rbox(2.6, 0.14, 1.5, 0.05), toon(C.roof), 0, 3.05, 0.65, g); canopy.rotation.x = 0.28;
+  const cs = mesh(rbox(2.7, 0.24, 1.55, 0.12), toon(C.snow), 0, 3.2, 0.62, g); cs.rotation.x = 0.28;
+  // фонарь у двери
+  const lp = new THREE.Group(); lp.position.set(-1.25, 2.3, 0.25); g.add(lp);
+  mesh(rbox(0.32, 0.42, 0.32, 0.06), toon(0x2b2b33), 0, 0, 0, lp, { thin: true });
+  const lampGlass = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.28, 0.33), new THREE.MeshStandardMaterial({ color: 0x331a05, emissive: 0xffc46b, emissiveIntensity: 2.2 })); lp.add(lampGlass);
+  const lampLight = new THREE.PointLight(0xffb45a, 6, 7, 1.6); lampLight.position.set(0, 0, 0.5); lp.add(lampLight); window.__lamp = lampLight;
+}
+// фронтоны: вертикальная доска + круглое слуховое окно с «солнышком»
+const RISE = 2.6, ROOF_Y = WALL_TOP;
+for (const s of [-1, 1]) {
+  const tri = new THREE.Shape(); tri.moveTo(-HD / 2 - 0.2, 0); tri.lineTo(HD / 2 + 0.2, 0); tri.lineTo(0, RISE); tri.closePath();
+  const g = new THREE.ExtrudeGeometry(tri, { depth: 0.18, bevelEnabled: false });
+  const m = mesh(g, toon(0xa96339), s * (HW / 2 + 0.2), ROOF_Y - 0.05, 0, house); m.rotation.y = s * Math.PI / 2; m.position.x += s > 0 ? -0.09 : 0.09;
+  const ow = new THREE.Group(); ow.position.set(s * (HW / 2 + 0.32), ROOF_Y + 0.95, 0); ow.rotation.y = s * Math.PI / 2; house.add(ow);
+  mesh(new THREE.CircleGeometry(0.36, 24), glassMat, 0, 0, 0.0, ow, { line: false });
+  mesh(new THREE.TorusGeometry(0.4, 0.07, 8, 24), trimMat, 0, 0, 0.03, ow);
+  for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; const r = mesh(rbox(0.06, 0.22, 0.05, 0.02), toon(C.gold), Math.cos(a) * 0.58, Math.sin(a) * 0.58, 0.02, ow, { thin: true }); r.rotation.z = a - Math.PI / 2; }
+  // «полотенце» под коньком
+  mesh(rbox(0.22, 0.9, 0.1, 0.05), trimMat, 0, 1.2, 0.04, ow);
+}
+// крыша: тёмная черепица по краю, сверху — толстая пухлая снежная шапка с наплывами и сосульками
+const SL = Math.hypot(HD / 2 + 0.9, RISE), ANG = Math.atan2(RISE, HD / 2 + 0.9);
+for (const s of [-1, 1]) {
+  const g = new THREE.Group(); g.position.set(0, ROOF_Y + RISE / 2, s * (HD / 4 + 0.45)); g.rotation.x = s * ANG; house.add(g);
+  mesh(rbox(HW + 1.5, 0.22, SL, 0.08), toon(C.roof), 0, 0, 0, g);
+  mesh(rbox(HW + 1.3, 0.42, SL - 0.15, 0.2, 4), toon(C.snow), 0, 0.3, -s * 0.05, g);
+  // наплывы снега у карниза
+  for (let i = 0; i < 14; i++) { const x = -HW / 2 - 0.5 + i * (HW + 1) / 13; const b = mesh(new THREE.SphereGeometry(0.28 + rnd() * 0.12, 14, 10), toon(C.snow), x, 0.18, s * (SL / 2 - 0.05), g, { thin: true }); b.scale.set(1.3, 0.7, 1); }
+}
+// конёк
+{ const ridge = mesh(new THREE.CapsuleGeometry(0.3, HW + 1, 6, 14), toon(C.snow), 0, ROOF_Y + RISE + 0.18, 0, house); ridge.rotation.z = Math.PI / 2; }
+// сосульки
+{
+  const icM = new THREE.MeshStandardMaterial({ color: C.ice, emissive: 0x6fb6ff, emissiveIntensity: 0.25, roughness: 0.2 });
+  for (const s of [-1, 1]) for (let i = 0; i < 22; i++) {
+    const l = 0.25 + rnd() * 0.6, x = -HW / 2 - 0.45 + i * (HW + 0.9) / 21 + (rnd() - 0.5) * 0.12;
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.06, l, 7), icM); c.rotation.x = Math.PI; c.position.set(x, ROOF_Y - 0.12 - l / 2, s * (HD / 2 + 0.95)); house.add(c);
+  }
+}
+// печная труба — кирпичная, чуть кривая, со снежной шапкой
+const chim = new THREE.Group(); chim.position.set(-2.0, ROOF_Y + RISE * 0.35, 1.0); chim.rotation.z = 0.05; house.add(chim); // на переднем скате — видна сразу
+for (let r = 0; r < 9; r++) for (let q = 0; q < 2; q++) mesh(rbox(0.44, 0.24, 0.9, 0.05), toon(r % 2 ? C.brick : 0xa84c37), (q - 0.5) * 0.46 + (r % 2 ? 0.1 : 0), r * 0.26, 0, chim, { thin: true });
+mesh(rbox(1.15, 0.22, 1.05, 0.06), toon(0x6b6f7a), 0, 2.36, 0, chim);
+mesh(new THREE.SphereGeometry(0.62, 16, 10), toon(C.snow), 0, 2.5, 0, chim).scale.set(1, 0.4, 0.95);
+// дым
+const smoke = [], smokeMat = toon(0xeef2fa, { transparent: true, opacity: 0.85 });
+for (let i = 0; i < 9; i++) { const m = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 10), smokeMat.clone()); m.userData.t = i / 9; scene.add(m); smoke.push(m); }
+
+// ---------- двор ----------
+function pine(x, z, h) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g);
+  mesh(new THREE.CylinderGeometry(0.16, 0.22, h * 0.25, 8), toon(0x6b4226), 0, h * 0.12, 0, g, { thin: true });
+  for (let k = 0; k < 4; k++) {
+    const r = h * (0.36 - k * 0.075), y = h * (0.28 + k * 0.17);
+    mesh(new THREE.ConeGeometry(r, h * 0.3, 9), toon(k % 2 ? C.pine : C.pineD), 0, y, 0, g);
+    const sc = mesh(new THREE.ConeGeometry(r * 0.82, h * 0.12, 9), toon(C.snow), 0, y + h * 0.07, 0, g, { thin: true }); void sc;
+  }
+}
+pine(-9.5, -4, 5.5); pine(-12, 2.5, 6.5); pine(9.8, -6, 6); pine(12.5, 1, 4.8); pine(-6.5, -9.5, 7); pine(5, -11, 6.2); pine(-15, -8, 8); pine(15, -9, 7);
+// поленница
+{ const g = new THREE.Group(); g.position.set(4.9, 0, -1.6); g.rotation.y = Math.PI / 2; scene.add(g);
+  for (let r = 0; r < 4; r++) for (let i = 0; i < 6 - (r % 2); i++) { const l = mesh(new THREE.CylinderGeometry(0.17, 0.17, 1.1, 10), toon(r % 2 ? C.logB : C.log), -0.9 + i * 0.36 + (r % 2) * 0.18, 0.18 + r * 0.31, 0, g, { thin: true }); l.rotation.x = Math.PI / 2; }
+  mesh(rbox(2.2, 0.25, 1.2, 0.12), toon(C.snow), 0, 1.45, 0, g, { thin: true }); }
+// снеговик с ведром и морковкой
+{ const g = new THREE.Group(); g.position.set(-4.6, 0.3, 5.2); g.rotation.y = 0.5; scene.add(g);
+  mesh(new THREE.SphereGeometry(0.85, 20, 16), toon(C.snow), 0, 0.75, 0, g); mesh(new THREE.SphereGeometry(0.6, 20, 16), toon(C.snow), 0, 1.85, 0, g); mesh(new THREE.SphereGeometry(0.42, 20, 16), toon(C.snow), 0, 2.65, 0, g);
+  const nose = mesh(new THREE.ConeGeometry(0.08, 0.45, 10), toon(0xf08a24), 0, 2.65, 0.55, g, { thin: true }); nose.rotation.x = Math.PI / 2;
+  for (const s of [-1, 1]) mesh(new THREE.SphereGeometry(0.06, 8, 6), toon(0x222222), s * 0.15, 2.78, 0.36, g, { thin: true });
+  mesh(new THREE.CylinderGeometry(0.28, 0.34, 0.42, 14), toon(0x4a6ea8), 0, 3.12, 0, g);
+  const sc = mesh(new THREE.TorusGeometry(0.42, 0.11, 8, 20), toon(C.red), 0, 2.3, 0, g); sc.rotation.x = Math.PI / 2; }
+// санки
+{ const g = new THREE.Group(); g.position.set(3.6, 0.28, 4.4); g.rotation.y = -0.6; scene.add(g);
+  for (const s of [-1, 1]) { const r = mesh(new THREE.TorusGeometry(0.22, 0.05, 6, 12, Math.PI), toon(C.red), s * 0.32, 0.22, 0.65, g, { thin: true }); r.rotation.y = Math.PI / 2; mesh(rbox(0.08, 0.08, 1.4, 0.03), toon(C.red), s * 0.32, 0.05, 0, g, { thin: true }); }
+  for (let i = 0; i < 4; i++) mesh(rbox(0.85, 0.06, 0.24, 0.03), toon(0xc8844f), 0, 0.3, -0.5 + i * 0.32, g, { thin: true }); }
+// забор с шапками снега
+for (let i = 0; i < 22; i++) {
+  const a = -1.15 + i * 0.105, x = Math.sin(a) * 13, z = Math.cos(a) * 11.5;
+  if (Math.abs(x) < 1.6 && z > 0) continue;
+  const p = mesh(rbox(0.22, 1.3, 0.12, 0.05), toon(0xb88252), x, 0.6, z, scene, { thin: true }); p.rotation.y = a;
+  mesh(new THREE.SphereGeometry(0.15, 10, 8), toon(C.snow), 0, 0.68, 0, p, { thin: true }).scale.set(1.1, 0.6, 1);
+}
+// падающий снег
+const flakes = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0xffffff, size: 0.09, transparent: true, opacity: 0.9 }));
+{ const n = 900, pos = new Float32Array(n * 3); for (let i = 0; i < n; i++) { pos[i * 3] = (rnd() - 0.5) * 50; pos[i * 3 + 1] = rnd() * 22; pos[i * 3 + 2] = (rnd() - 0.5) * 50; } flakes.geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3)); scene.add(flakes); }
+
+// ---------- свет и небо, три настроения ----------
+const hemi = new THREE.HemisphereLight(0xbcd6ff, 0xf3e6da, 1.0); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffd29a, 2.2); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.03;
+Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, near: 1, far: 70 }); scene.add(sun); scene.add(sun.target);
+const rim = new THREE.DirectionalLight(0x8fb8ff, 0.8); rim.position.set(-12, 9, -14); scene.add(rim);
+const skyU = { top: { value: new THREE.Color() }, mid: { value: new THREE.Color() }, bot: { value: new THREE.Color() } };
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(200, 32, 16), new THREE.ShaderMaterial({ side: THREE.BackSide, depthWrite: false, uniforms: skyU,
+  vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: 'uniform vec3 top, mid, bot; varying vec3 vP; void main(){ float h = vP.y; vec3 c = h > 0.0 ? mix(mid, top, smoothstep(0.0, 0.55, h)) : mix(mid, bot, smoothstep(0.0, -0.2, h)); gl_FragColor = vec4(c, 1.0); }' })));
+const MOODS = {
+  eve: { top: 0x3f5fa8, mid: 0xf6b98a, bot: 0xe8c7b0, fog: 0xe2b8a6, sun: [0xffc58a, 2.0, [14, 7, 9]], hemi: [0xb7c8f2, 0xf0d9c8, 0.95], glow: 1.6, lamp: 6, exp: 1.05, bloom: 0.55 },
+  day: { top: 0x4f95e6, mid: 0xbfe0fb, bot: 0xe6f0fa, fog: 0xcfe3f6, sun: [0xfff0d8, 2.1, [10, 16, 8]], hemi: [0xbdd8ff, 0xeee6dc, 0.85], glow: 0.6, lamp: 0, exp: 0.88, bloom: 0.06, far: 140 },
+  night: { top: 0x0b1433, mid: 0x26386e, bot: 0x2d3d63, fog: 0x2a3a66, sun: [0x9fb8ff, 0.7, [-8, 14, 6]], hemi: [0x5a6fb0, 0x2d3550, 0.6], glow: 2.6, lamp: 9, exp: 1.15, bloom: 0.9 },
+};
+let mood = 'eve';
+function setMood(m) {
+  mood = m; const M = MOODS[m];
+  skyU.top.value.setHex(M.top); skyU.mid.value.setHex(M.mid); skyU.bot.value.setHex(M.bot);
+  scene.fog = new THREE.Fog(M.fog, 30, M.far || 90);
+  sun.color.setHex(M.sun[0]); sun.intensity = M.sun[1]; sun.position.set(...M.sun[2]).multiplyScalar(2);
+  hemi.color.setHex(M.hemi[0]); hemi.groundColor.setHex(M.hemi[1]); hemi.intensity = M.hemi[2];
+  glassMat.emissiveIntensity = M.glow; window.__lamp.intensity = M.lamp; R.toneMappingExposure = M.exp; bloom.strength = M.bloom;
+  for (const b of document.querySelectorAll('.bar button')) b.classList.toggle('on', b.dataset.t === m);
+}
+
+// ---------- постобработка: мягкое свечение окон и фонаря + виньетка ----------
+const comp = new EffectComposer(R); comp.addPass(new RenderPass(scene, cam));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.6, 0.82); comp.addPass(bloom);
+comp.addPass(new ShaderPass({ uniforms: { tDiffuse: { value: null } }, vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: 'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); float d = distance(vUv, vec2(0.5)); c.rgb *= 1.0 - smoothstep(0.45, 0.95, d) * 0.45; gl_FragColor = c; }' }));
+comp.addPass(new OutputPass());
+setMood(new URLSearchParams(location.search).get('mood') || 'eve');
+for (const b of document.querySelectorAll('.bar button')) b.onclick = () => setMood(b.dataset.t);
+addEventListener('resize', () => { cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); R.setSize(innerWidth, innerHeight); comp.setSize(innerWidth, innerHeight); });
+
+// ---------- анимация ----------
+const clock = new THREE.Clock();
+const chimTop = new THREE.Vector3(); chim.updateWorldMatrix(true, false); chim.localToWorld(chimTop.set(0, 2.7, 0));
+function frame() {
+  const dt = Math.min(0.05, clock.getDelta()), t = clock.elapsedTime;
+  for (const m of smoke) { m.userData.t = (m.userData.t + dt * 0.12) % 1; const k = m.userData.t; m.position.set(chimTop.x + Math.sin(k * 6 + t * 0.5) * 0.5 * k, chimTop.y + k * 5, chimTop.z - k * 1.2); m.scale.setScalar(0.5 + k * 1.8); m.material.opacity = 0.8 * (1 - k); }
+  const p = flakes.geometry.attributes.position; for (let i = 0; i < p.count; i++) { let y = p.getY(i) - dt * (0.8 + (i % 5) * 0.15); if (y < 0) y += 22; p.setY(i, y); p.setX(i, p.getX(i) + Math.sin(t + i) * dt * 0.2); } p.needsUpdate = true;
+  window.__lamp.intensity = MOODS[mood].lamp * (0.92 + Math.sin(t * 13) * 0.04 + Math.sin(t * 5.3) * 0.04);
+  ctl.update(); comp.render(); requestAnimationFrame(frame);
+}
+frame();
+window.__ready = true;
+</script>
+</body></html>
